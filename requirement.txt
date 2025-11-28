@@ -4,3 +4,4 @@ python-docx>=0.8.11
 waitress>=2.1.2
 python-dotenv>=0.21.0
 requests
+gunicorn==20.1.0

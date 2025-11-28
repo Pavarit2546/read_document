@@ -3,10 +3,12 @@ import json
 import io
 import tempfile
 import os
-from typing import Optional
+import requests
+from typing import Optional, Dict, Any
 
-# กำหนดเส้นทางไปยังไฟล์ Template DOCX (ต้องอยู่ในระดับเดียวกับ app.py หรือ Docker build)
-TEMPLATE_PATH = "ISMS-F-INF-036_template.docx"
+
+# กำหนด Default Template Path ในกรณีที่ไม่มี template มาใน request
+DEFAULT_TEMPLATE_PATH = os.path.join(os.path.dirname(__file__), '..', 'templates', 'default_template.docx')
 
 def merge_and_export_docx(user_data_json: str, template_bytes: Optional[bytes] = None) -> bytes:
     """
@@ -15,26 +17,44 @@ def merge_and_export_docx(user_data_json: str, template_bytes: Optional[bytes] =
     :param template_bytes: (Optional) ถ้าให้มา จะใช้เป็น template แทน TEMPLATE_PATH
     :return: Byte Stream ของไฟล์ DOCX ที่สมบูรณ์
     """
-    temp_template_path = None
     try:
         data = json.loads(user_data_json)
         context = data
+        print(f"Merge Context: {context}")
 
-        # ถ้ามี template_bytes ให้สร้าง temp file และใช้แทน TEMPLATE_PATH
-        template_path_to_use = TEMPLATE_PATH
-        if template_bytes:
-            tmp = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
-            tmp.write(template_bytes)
-            tmp.close()
-            temp_template_path = tmp.name
-            template_path_to_use = temp_template_path
+        template_to_use = None
+        if 'template_url' in data:
+            print(f"Downloading template from: {data['template_url']}")
+            response = requests.get(data['template_url'])
+            response.raise_for_status()  # Raise an exception for bad status codes
+            template_to_use = io.BytesIO(response.content)
+        elif template_bytes:
+            template_to_use = io.BytesIO(template_bytes)
+
+        # หากไม่มี template_url หรือ template_bytes ให้ใช้ default template
+        if not template_to_use:
+            print(f"No template provided, using default template at: {DEFAULT_TEMPLATE_PATH}")
+            template_to_use = DEFAULT_TEMPLATE_PATH
+
+        # ลบ template_url ออกจาก context ก่อนทำการ render เพื่อไม่ให้แสดงในเอกสารผลลัพธ์
+        # และป้องกันปัญหา lazy rendering ของ docxtpl
+        # if 'template_url' in context:
+        #     del context['template_url']
+
+        # --- เพิ่มส่วนจัดการ Checkbox ---
+        # วนลูปใน context เพื่อแปลงค่า boolean เป็นสัญลักษณ์ checkbox
+        for key, value in context.items():
+            if isinstance(value, bool):
+                # ถ้าเป็น True ให้ใช้ '☒', ถ้าเป็น False ให้ใช้ '☐'
+                context[key] = '☒' if value else '☐'
+        # --------------------------------
 
         # โหลด Template
-        doc = DocxTemplate(template_path_to_use)
+        doc = DocxTemplate(template_to_use)
 
         # ทำการ Merge ข้อมูล
         doc.render(context)
-
+        
         # บันทึกไฟล์ที่ Merge แล้วลงใน Memory (Buffer)
         output_buffer = io.BytesIO()
         doc.save(output_buffer)
@@ -45,10 +65,45 @@ def merge_and_export_docx(user_data_json: str, template_bytes: Optional[bytes] =
     except Exception as e:
         print(f"Merge Error: {str(e)}")
         raise Exception(f"Merge failed: {str(e)}")
-    finally:
-        # cleanup temp template if created
-        if temp_template_path and os.path.exists(temp_template_path):
-            try:
-                os.unlink(temp_template_path)
-            except Exception:
-                pass
+    
+def normalize_and_merge_docx(context: Dict[str, Any]) -> bytes:
+    """
+    Handles fetching the template, normalizing boolean values, and merging data.
+    """
+    
+    template_url = context.pop('template_url', None)
+    if not template_url or template_url == "-":
+        raise ValueError("Template URL is missing or invalid.")
+
+    # 1. ดาวน์โหลด Template จาก URL
+    print(f"Downloading template from: {template_url}")
+    try:
+        response = requests.get(template_url)
+        response.raise_for_status()
+        template_file = io.BytesIO(response.content)
+    except requests.exceptions.RequestException as e:
+        raise Exception(f"Failed to download template: {str(e)}")
+
+    # 2. Normalization: แปลง Boolean/null ให้เป็น Checkbox/Hyphen (-)
+    processed_context = {}
+    for key, value in context.items():
+        if isinstance(value, bool):
+            # แปลง Boolean เป็นสัญลักษณ์ Checkbox (สำหรับ docxtpl)
+            processed_context[key] = '☒' if value else '☐'
+        elif value is None or value == 'null' or value == '-':
+            # แปลง None/null/Hyphen ให้เป็น String ว่างสำหรับการ Merge
+            processed_context[key] = "" 
+        else:
+            processed_context[key] = value
+
+    # 3. โหลด Template และ Merge
+    doc = DocxTemplate(template_file)
+    print("Starting document render...")
+    doc.render(processed_context)
+
+    # 4. บันทึกเป็น Byte Stream
+    output_buffer = io.BytesIO()
+    doc.save(output_buffer)
+    output_buffer.seek(0)
+    
+    return output_buffer.getvalue()
