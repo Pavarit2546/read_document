@@ -190,58 +190,7 @@ def merge_and_export():
     except Exception as e:
         print(f"Merge and Export Error: {str(e)}")
         return jsonify({"status": "error", "message": f"Internal server error: {str(e)}"}), 500
-    
-
-@app.route('/dynamic-merge-docx', methods=['POST'])
-def dynamic_merge_and_export():
-    """
-    Endpoint สำหรับรับ Final JSON Context ที่ผ่านการ Mapping และ Normalization แล้ว
-    (Context ซ้อนอยู่ในคีย์ 'output') เพื่อทำการ Merge ข้อมูลลงใน Template DOCX
-    """
-    try:
-        raw_input_json = request.get_json(silent=True, force=True)
-        
-        if not raw_input_json:
-            return jsonify({"status": "error", "message": "No JSON input provided."}), 400
-        
-        merge_context = None
-        
-        # 1. ดึง Context ที่แท้จริงออกจากคีย์ 'output' 
-        if 'output' in raw_input_json:
-            output_data = raw_input_json['output']
-            
-            if isinstance(output_data, dict):
-                # กรณี output เป็น Python Dictionary แล้ว (เช่น: {"output": {...}} )
-                merge_context = output_data
-            elif isinstance(output_data, str):
-                 # กรณี output เป็น JSON String (เช่น: {"output": "{...}"} )
-                 try:
-                    merge_context = _json.loads(output_data)
-                 except _json.JSONDecodeError:
-                    return jsonify({"status": "error", "message": "The 'output' value is not a valid JSON string."}), 400
-            
-        
-        if not merge_context or not isinstance(merge_context, dict):
-             return jsonify({"status": "error", "message": "Final merge context could not be extracted from 'output'."}), 400
-
-        # 2. ทำการ Merge และ Normalization
-        # ต้องใช้ฟังก์ชัน normalize_and_merge_docx ซึ่งจัดการดาวน์โหลด template และ normalization
-        docx_bytes = normalize_and_merge_docx(merge_context)
-
-        # 3. ส่งไฟล์ DOCX กลับไปเป็น Byte Stream
-        return send_file(
-            io.BytesIO(docx_bytes),
-            mimetype='application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-            as_attachment=True,
-            download_name='generated_document.docx'
-        )
-
-    except ValueError as ve:
-        print(f"Merge Error: {str(ve)}")
-        return jsonify({"status": "error", "message": f"Merge failed: {str(ve)}"}), 400
-    except Exception as e:
-        print(f"Internal Error: {str(e)}")
-        return jsonify({"status": "error", "message": f"Internal server error: {str(e)}"}), 500    
+       
 
 if __name__ == '__main__':
     # รัน Flask server ที่ Port 3000
